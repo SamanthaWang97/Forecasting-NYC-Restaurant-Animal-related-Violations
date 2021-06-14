@@ -1,0 +1,1017 @@
+---
+title: "Forecasting NYC Restaurant Animal-related Violations"
+author: "Chavanie Joseph, Tiffany Ramkaran, Samantha Wang"
+date: "Fall 2020"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.align = "center", warning=FALSE)
+```
+
+```{r install packages, eval=FALSE, include=FALSE}
+install.packages("rgdal") ; install.packages("mapproj") ; install.packages("zoo") ; install.packages("xts")
+install.packages("reshape2") ; install.packages("pracma")
+install.packages("hrbrthemes")
+install.packages("forecast")
+install.packages("kableExtra")
+install.packages("car")
+```
+
+```{r load libraries, include=FALSE}
+library(tidyverse) ; library(modelr) ; library(lubridate)
+library(randomForest) ; library(cowplot) ; library("readxl")
+library(zoo) ; library(xts) ;library(reshape2) ## melt function 
+library(pracma) ; library(hrbrthemes)
+library(forecast) ; library(tseries)
+library(kableExtra)
+library(car)
+
+## Map
+library(rgdal) ; library(ggplot2); library(broom)
+```
+
+```{r IMPORT NYC Inspection data, include=FALSE}
+
+#Import data 
+nyc_inspection_dataog <- as_tibble(read_excel('DOHMH-New-York-City-Restaurant-Inspection-Results.xlsx'))
+
+#Rename variables and clean data
+nyc_inspection_data <- nyc_inspection_dataog %>% 
+  rename(Borough=BORO, ZipCode=ZIPCODE, InspectionDate="INSPECTION DATE", ViolationCode="VIOLATION CODE", ViolationDesc= "VIOLATION DESCRIPTION", CommunityDistrict="Community Board") %>% 
+  mutate(Borough = case_when(ZipCode=='10166'|ZipCode=='10168'|ZipCode=='10285'~'Manhattan',TRUE ~ Borough)) %>%
+  mutate(Borough=case_when(ZipCode=='11249'~'Brooklyn', TRUE ~ Borough))
+#sapply(nyc_inspection_data, class)
+```
+
+```{r filter Violations + create Week variable in NYC Inspection data, include=FALSE}
+#Create nyc_violations including all variables, filtered dates, Animal-related Violations, and add a Week variable
+nyc_violations <- nyc_inspection_data %>% filter(Borough != 0  & (ViolationCode == '08A'|ViolationCode == '04K'|ViolationCode == '04L'|ViolationCode == '04M'|ViolationCode == '04N'|ViolationCode == '04O') & 
+  (InspectionDate >= as.Date("2017-01-01") & InspectionDate < as.Date("2019-12-28"))) %>% 
+  select(DBA, Borough, CommunityDistrict, `CUISINE DESCRIPTION`, ViolationCode, ViolationDesc, InspectionDate) %>% 
+  mutate(Week = floor_date(InspectionDate, unit = "weeks", week_start = 0))
+
+#Violations per Week
+weekly_violations <- nyc_violations %>% group_by(Week) %>% summarize(AnimalViolation = n())
+#View(weekly_violations)
+
+#Violation per Community District
+district_violations <- nyc_violations %>% group_by(Week, CommunityDistrict) %>% summarise(AnimalViolations = n())
+#View(district_violations)
+
+#Violations per Borough
+borough_violations <- nyc_violations %>% group_by(Week, Borough) %>% summarise(AnimalViolations = n())
+
+##ViolationCode Key##
+#08A: Facility not vermin proof. Harborage or conditions conducive to attracting vermin to the premises and/or allowing vermin to exist.
+
+#04K: Evidence of rats or live rats present in facility's food and/or non-food areas.
+
+#04L: Evidence of mice or live mice present in facility's food and/or non-food areas.
+
+#04M: Live roaches present in facility's food and/or non-food areas.
+
+#04N: Filth flies or food/refuse/sewage-associated (FRSA) flies present in facility’s food and/or non-food areas. Filth flies include house flies, little house flies, blow flies, bottle flies and flesh flies. Food/refuse/sewage-associated flies include fruit flies, drain flies and Phorid flies.
+
+#04O: Live animals other than fish in tank or service animal present in facility's food and/or non-food areas.
+```
+
+```{r consolidate & create Cuisine Type variables in NYC Inspection data, include=FALSE}
+
+fast_food <- filter(nyc_violations, DBA == "APPLEBEE'S"|
+DBA == "ARBY'S"|
+DBA == "AU BON PAIN"|
+DBA == "AUNTIE ANNES"|
+DBA == "AUNTIE ANNE'S / CINNABON"|
+DBA == "AUNTIE ANNE'S PRETZELS"|
+DBA == "AUNTIE ANNE'S PRETZELS, PINKBERRY"|
+DBA == "AUNTIE ANNE'S/CINNABON"|
+DBA == "AUNTIE ANNE'S/RED MANGO"|
+DBA == "BENIHANA"|
+DBA == "BLAZE PIZZA"|
+DBA == "BOSTON MARKET"|
+DBA == "BUBBA GUMP SHRIMP CO."|
+DBA == "BUCA DI BEPPO"|
+DBA == "BUFFALO WILD WINGS"|
+DBA == "BUFFALO WILD WINGS, PEETS COFFEE & TEA, BENTO SUSHI"|
+DBA == "BURGER KING"|
+DBA == "BURGER KING, POPEYES"|
+DBA == "BURGER KING/CINNABON"|
+DBA == "BURGERFI"|
+DBA == "CALIFORNIA PIZZA KITCHEN"|
+DBA == "CHARLEYS PHILLY STEAKS"|
+DBA == "CHICK-FIL-A"|
+DBA == "CHILI'S GRILL & BAR"|
+DBA == "CHIPOTLE MEXICAN GRILL"|
+DBA == "CHIPOTLE MEXICAN GRILL # 3265"|
+DBA == "CHIPOTLE MEXICAN GRILL #2254"|
+DBA == "CHIPOTLE MEXICAN GRILL #2308"|
+DBA == "CHIPOTLE MEXICAN GRILL #2570"|
+DBA == "CHIPOTLE MEXICAN GRILL #2834"|
+DBA == "CHIPOTLE MEXICAN GRILL #2838"|
+DBA == "CHIPOTLE MEXICAN GRILL #2879"|
+DBA == "CHIPOTLE MEXICAN GRILL #2918"|
+DBA == "CHIPOTLE MEXICAN GRILL #3020"|
+DBA == "CHIPOTLE MEXICAN GRILL #3056"|
+DBA == "CHIPOTLE MEXICAN GRILL #3233"|
+DBA == "CHIPOTLE MEXICAN GRILL #3309"|
+DBA == "CHIPOTLE MEXICAN GRILL #3426"|
+DBA == "CHIPOTLE MEXICAN GRILL #3478"|
+DBA == "CHIPOTLE MEXICAN GRILL #3544"|
+DBA == "CHIPOTLE MEXICAN GRILL #3591"|
+DBA == "CHIPOTLE MEXICAN GRILL #3622"|
+DBA == "CHIPOTLE MEXICAN GRILL #3706"|
+DBA == "CHIPOTLE MEXICAN GRILL #3741"|
+DBA == "CHIPOTLE MEXICAN GRILL 3562"|
+DBA == "CHIPOTLE MEXICAN GRILL#2964"|
+DBA == "CHIPOTLEMEXICAN GRILL #2659"|
+DBA == "CHIPTOLE MEXICAN GRILL #2407"|
+DBA == "CHIPTOLE MEXICAN GRILL #3044"|
+DBA == "CINNABON"|
+DBA == "CINNABON/STRAWBERRY ICE COLD"|
+DBA == "COLD STONE CREAMERY"|
+DBA == "DAIRY QUEEN GRILL & CHILL"|
+DBA == "DOMINOS"|
+DBA == "DOMINO'S"|
+DBA == "DOMINOS PIZZA"|
+DBA == "DOMINO'S PIZZA"|
+DBA == "DOMINO'S PIZZA (#3321)"|
+DBA == "DOS TOROS"|
+DBA == "DOS TOROS TAQUERIA"|
+DBA == "DUNKIN"|
+DBA == "DUNKIN'"|
+DBA == "DUNKIN  / BASKIN ROBBINS"|
+DBA == "DUNKIN  BASKIN ROBBINS"|
+DBA == "DUNKIN'  BASKIN ROBBINS"|
+DBA == "DUNKIN' & BASKIN ROBBINS"|
+DBA == "DUNKIN' / BASKIN ROBBINS"|
+DBA == "DUNKIN /BASKIN ROBBINS"|
+DBA == "DUNKIN /JEAN GEORGES SIMPLY CHICKEN"|
+DBA == "DUNKIN BASKIN ROBBINS"|
+DBA == "DUNKIN' BASKIN ROBBINS"|
+DBA == "DUNKIN BASKIN ROBINS"|
+DBA == "DUNKIN DONUT"|
+DBA == "DUNKIN DONUTS"|
+DBA == "DUNKIN' DONUTS"|
+DBA == "DUNKIN DONUTS BASKIN ROBBINS"|
+DBA == "DUNKIN' DONUTS, HUDSON NEWS"|
+DBA == "DUNKIN DONUTS/BASKIN ROBBINS"|
+DBA == "DUNKIN' EXPRESS"|
+DBA == "DUNKIN, BASKIN ROBBINS"|
+DBA == "DUNKIN', BASKIN ROBBINS"|
+DBA == "DUNKIN', BASKIN ROBBINS, POPEYES"|
+DBA == "DUNKIN', SUBWAY"|
+DBA == "DUNKIN/BASKIN ROBBINS"|
+DBA == "DUNKIN'/BASKIN ROBBINS"|
+DBA == "FIVE GUYS BURGERS AND FRIES"|
+DBA == "FIVE GUYS FAMOUS BURGERS AND FRIES"|
+DBA == "FOGO DE CHAO"|
+DBA == "GOLDEN CORRAL"|
+DBA == "HARD ROCK CAFE"|
+DBA == "HOOTERS"|
+DBA == "IHOP"|
+DBA == "JAMBA JUICE"|
+DBA == "KFC"|
+DBA == "KFC AND TACO BELL"|
+DBA == "KFC, TACO BELL"|
+DBA == "KFC/TACO BELL"|
+DBA == "KRISPY KREME"|
+DBA == "LE PAIN QUOTIDIEN"|
+DBA == "LITTLE CAESARS"|
+DBA == "LONGHORN STEAKHOUSE"|
+DBA == "MCDONALDS"|
+DBA == "MCDONALD'S"|
+DBA == "MCDONALDS # 18093"|
+DBA == "MCDONALDS # 6160"|
+DBA == "MCDONALD'S #11542"|
+DBA == "MCDONALD'S #13068"|
+DBA == "MCDONALD'S #23105"|
+DBA == "MCDONALD'S #3880"|
+DBA == "MCDONALDS 14520"|
+DBA == "MCDONALD'S CORPORATION"|
+DBA == "MCDONALDS RESTAURANT"|
+DBA == "MCDONALD'S RESTAURANT"|
+DBA == "METRO DINER"|
+DBA == "OLIVE GARDEN"|
+DBA == "OUTBACK STEAKHOUSE"|
+DBA == "PANDA EXPRESS"|
+DBA == "PANERA BREAD"|
+DBA == "PAPA JOHNS"|
+DBA == "PAPA JOHN'S"|
+DBA == "PAPA JOHN'S (STAND 310)"|
+DBA == "PAPA JOHNS PIZZA"|
+DBA == "PAPA JOHN'S PIZZA"|
+DBA == "PAPA JOHN'S PIZZA ELMHURST"|
+DBA == "PAPA JOHN'S PIZZA NE HARLEM"|
+DBA == "PAPA JOHN'S PIZZA NW HARLEM"|
+DBA == "PAPA JOHN'S PIZZA SW HARLEM"|
+DBA == "PERKINS RESTAURANT & BAKERY"|
+DBA == "PIZZA HUT"|
+DBA == "POLLO CAMPERO"|
+DBA == "POPEYES"|
+DBA == "POPEYES LOUISIANA KITCHEN"|
+DBA == "POPEYES LOUSIANA KICTHEN"|
+DBA == "POTBELLY SANDWICH SHOP"|
+DBA == "PRET A MANGER"|
+DBA == "QDOBA MEXICAN EATS"|
+DBA == "RED LOBSTER"|
+DBA == "RUBY TUESDAY"|
+DBA == "SARKU JAPAN"|
+DBA == "SBARRO"|
+DBA == "SHAKE SHACK"|
+DBA == "SMASHBURGER"|
+DBA == "SONIC DRIVE-IN"|
+DBA == "STARBUCKS"|
+DBA == "STARBUCKS # 24485"|
+DBA == "STARBUCKS #48990"|
+DBA == "STARBUCKS #50611"|
+DBA == "STARBUCKS #54446"|
+DBA == "STARBUCKS #7860"|
+DBA == "STARBUCKS #847"|
+DBA == "STARBUCKS (Fordham University)"|
+DBA == "STARBUCKS (Store #50483)"|
+DBA == "STARBUCKS 379 DEKALB(DESIGN CENTER)"|
+DBA == "STARBUCKS COFFE #55085"|
+DBA == "STARBUCKS COFFEE"|
+DBA == "STARBUCKS COFFEE # 26528"|
+DBA == "STARBUCKS COFFEE # 49196"|
+DBA == "STARBUCKS COFFEE # 54771"|
+DBA == "STARBUCKS COFFEE # 7851"|
+DBA == "STARBUCKS COFFEE #14090"|
+DBA == "STARBUCKS COFFEE #22596"|
+DBA == "STARBUCKS COFFEE #23591"|
+DBA == "STARBUCKS COFFEE #26188"|
+DBA == "STARBUCKS COFFEE #28171"|
+DBA == "STARBUCKS COFFEE #29719"|
+DBA == "STARBUCKS COFFEE #29856"|
+DBA == "STARBUCKS COFFEE #48170"|
+DBA == "STARBUCKS COFFEE #48340"|
+DBA == "STARBUCKS COFFEE #49450"|
+DBA == "STARBUCKS COFFEE #49550"|
+DBA == "STARBUCKS COFFEE #49952"|
+DBA == "STARBUCKS COFFEE #50622"|
+DBA == "STARBUCKS COFFEE #52530"|
+DBA == "STARBUCKS COFFEE #53473"|
+DBA == "STARBUCKS COFFEE #56451"|
+DBA == "STARBUCKS COFFEE #57601"|
+DBA == "STARBUCKS COFFEE #58310"|
+DBA == "STARBUCKS COFFEE #58455"|
+DBA == "STARBUCKS COFFEE #59524"|
+DBA == "STARBUCKS COFFEE #60721"|
+DBA == "STARBUCKS COFFEE #7358"|
+DBA == "STARBUCKS COFFEE #823"|
+DBA == "STARBUCKS COFFEE #852"|
+DBA == "STARBUCKS COFFEE COMPANY"|
+DBA == "STARBUCKS COFFEE COMPANY #22716"|
+DBA == "STARBUCKS COFFEE COMPANY #29854"|
+DBA == "STARBUCKS COFFEE COMPANY #29897"|
+DBA == "STARBUCKS COFFEE COMPANY #48116"|
+DBA == "STARBUCKS CORPORATION"|
+DBA == "STARBUCKS RESERVE LICENSE SERVICES"|
+DBA == "STARBUCKS TAXI"|
+DBA == "STK"|
+DBA == "SUBWAY"|
+DBA == "SUBWAY # 30658"|
+DBA == "SUBWAY #47857"|
+DBA == "SUBWAY & CARVEL"|
+DBA == "SUBWAY (#29887)"|
+DBA == "SUBWAY (+ STAR MINI MART)"|
+DBA == "SUBWAY AND JUICE"|
+DBA == "SUBWAY CAFE"|
+DBA == "SUBWAY INN"|
+DBA == "SUBWAY RESTAURANT"|
+DBA == "SUBWAY SANDWICHES"|
+DBA == "SUBWAY STORE #30214"|
+DBA == "SUBWAY, CARVEL"|
+DBA == "SUBWAY, PIZZA & BURGER UR WAY"|
+DBA == "SUBWAY/KRISPY KRUNCHY CHICKEN"|
+DBA == "SUBWAY/NATHAN'S FAMOUS"|
+DBA == "SUBWAYS"|
+DBA == "SWEETGREEN"|
+DBA == "SWEETGREEN (MURRAY HILL)"|
+DBA == "SWEETGREEN 32ND AND PARK"|
+DBA == "SWEETGREEN 44TH & 3RD"|
+DBA == "SWEETGREEN 55TH AND PARK"|
+DBA == "SWEETGREEN 91ST AND BROADWAY"|
+DBA == "SWEETGREEN ASTOR PLACE"|
+DBA == "SWEETGREEN BOWERY"|
+DBA == "SWEETGREEN COLUMBUS CIRCLE"|
+DBA == "SWEETGREEN DUMBO"|
+DBA == "SWEETGREEN GANSEVOORT"|
+DBA == "SWEETGREEN GRAND CENTRAL"|
+DBA == "SWEETGREEN GREENWICH VILLAGE"|
+DBA == "SWEETGREEN PENN PLAZA"|
+DBA == "SWEETGREEN ROCKFELLER"|
+DBA == "SWEETGREEN UNIVERSITY PLACE"|
+DBA == "SWEETGREEN VANDAM DELIVERY KITCHEN"|
+DBA == "SWEETGREEN WALL STREET"|
+DBA == "TACO BELL"|
+DBA == "TACO BELL AND PIZZA HUT"|
+DBA == "TACO BELL PIZZA HUT EXPRESS"|
+DBA == "TACO BELL, KFC"|
+DBA == "TACO BELL, PIATTINO, GREEN LEAFS"|
+DBA == "TACO BELL, PIZZA HUT EXPRESS"|
+DBA == "TACO BELL/PIZZA HUT EXPRESS"|
+DBA == "THE CAPITAL GRILLE"|
+DBA == "THE CHEESECAKE FACTORY"|
+DBA == "TIM HORTONS"|
+DBA == "TROPICAL SMOOTHIE CAFE"|
+DBA == "UNO PIZZERIA & GRILL"|
+DBA == "WENDY'S"|
+DBA == "WHITE CASTLE"|
+DBA == "WINGSTOP"
+ )
+fast_food$DBA <- "FastFood"
+
+fast_food <- fast_food %>% select(DBA, ViolationCode, Week) %>% rename(CuisineType = DBA)
+
+
+other_international <- filter(nyc_violations, `CUISINE DESCRIPTION` == "Afghan"|
+`CUISINE DESCRIPTION` == "African"|
+`CUISINE DESCRIPTION` == "Armenian"|
+`CUISINE DESCRIPTION` == "Australian"|
+`CUISINE DESCRIPTION` == "Cajun"|
+`CUISINE DESCRIPTION` == "Caribbean"|
+`CUISINE DESCRIPTION` == "Creole"|
+`CUISINE DESCRIPTION` == "Creole/Cajun"|
+`CUISINE DESCRIPTION` == "Egyptian"|
+`CUISINE DESCRIPTION` == "Ethiopian"|
+`CUISINE DESCRIPTION` == "Iranian"|
+`CUISINE DESCRIPTION` == "Jewish/Kosher"|
+`CUISINE DESCRIPTION` == "Mediterranean"|
+`CUISINE DESCRIPTION` == "Middle Eastern"|
+`CUISINE DESCRIPTION` == "Moroccan"|
+`CUISINE DESCRIPTION` == "Pakistani"|
+`CUISINE DESCRIPTION` == "Scandinavian"|
+`CUISINE DESCRIPTION` == "Turkish")
+other_international$`CUISINE DESCRIPTION` <- "OtherInternational"
+
+other_international <- other_international %>% select(`CUISINE DESCRIPTION`, ViolationCode, Week) %>% rename(CuisineType = `CUISINE DESCRIPTION`)
+
+American <- filter(nyc_violations, `CUISINE DESCRIPTION` == "American"|
+`CUISINE DESCRIPTION` == "Barbecue"|
+`CUISINE DESCRIPTION` == "Californian"|
+`CUISINE DESCRIPTION` == "Chicken"|
+`CUISINE DESCRIPTION` == "Delicatessen"|
+`CUISINE DESCRIPTION` == "Hamburgers"|
+`CUISINE DESCRIPTION` == "Hawaiian"|
+`CUISINE DESCRIPTION` == "Hotdogs"|
+`CUISINE DESCRIPTION` == "Hotdogs/Pretzels"|
+`CUISINE DESCRIPTION` == "Ice Cream, Gelato, Yogurt, Ices"|
+`CUISINE DESCRIPTION` == "Nuts/Confectionary"|
+`CUISINE DESCRIPTION` == "Pancakes/Waffles"|
+`CUISINE DESCRIPTION` == "Seafood"|
+`CUISINE DESCRIPTION` == "Soul Food"|
+`CUISINE DESCRIPTION` == "Southwestern"|
+`CUISINE DESCRIPTION` == "Steak"
+)
+American$`CUISINE DESCRIPTION` <- "American"
+American <- American %>% select(`CUISINE DESCRIPTION`, ViolationCode, Week) %>% rename(CuisineType = `CUISINE DESCRIPTION`)
+
+Asian <- filter(nyc_violations, `CUISINE DESCRIPTION` == "Asian"|
+`CUISINE DESCRIPTION` == "Bangladeshi"|
+`CUISINE DESCRIPTION` == "Chinese"|
+`CUISINE DESCRIPTION` == "Chinese/Cuban"|
+`CUISINE DESCRIPTION` == "Chinese/Japanese"|
+`CUISINE DESCRIPTION` == "Filipino"|
+`CUISINE DESCRIPTION` == "Indian"|
+`CUISINE DESCRIPTION` == "Indonesian"|
+`CUISINE DESCRIPTION` == "Japanese"|
+`CUISINE DESCRIPTION` == "Thai"|
+`CUISINE DESCRIPTION` == "Vietnamese/Cambodian/Malaysia")
+Asian$`CUISINE DESCRIPTION` <- "Asian"
+Asian <- Asian %>% select(`CUISINE DESCRIPTION`, ViolationCode, Week) %>% rename(CuisineType = `CUISINE DESCRIPTION`)
+
+Bakery_Cafe <- filter(nyc_violations, `CUISINE DESCRIPTION` == "Bagels/Pretzels"|
+`CUISINE DESCRIPTION` == "Bakery"|
+`CUISINE DESCRIPTION` == "Café/Coffee/Tea"|
+`CUISINE DESCRIPTION` == "Donuts")
+Bakery_Cafe$`CUISINE DESCRIPTION` <- "BakeryCafe"
+Bakery_Cafe <- Bakery_Cafe %>% select(`CUISINE DESCRIPTION`, ViolationCode, Week)%>% rename(CuisineType = `CUISINE DESCRIPTION`)
+
+Latin <- filter(nyc_violations, `CUISINE DESCRIPTION` == "Brazilian"|
+`CUISINE DESCRIPTION` == "Chilean"|
+`CUISINE DESCRIPTION` == "Latin (Cuban, Dominican, Puerto Rican, South & Central American)"|
+`CUISINE DESCRIPTION` == "Mexican"|
+`CUISINE DESCRIPTION` == "Peruvian"|
+`CUISINE DESCRIPTION` == "Spanish"|
+`CUISINE DESCRIPTION` == "Tapas"|
+`CUISINE DESCRIPTION` == "Tex-Mex")
+
+Latin$`CUISINE DESCRIPTION` <- "Latin"
+Latin <- Latin %>% select(`CUISINE DESCRIPTION`, ViolationCode, Week)%>% rename(CuisineType = `CUISINE DESCRIPTION`)
+
+European <- filter(nyc_violations, `CUISINE DESCRIPTION` == "Czech"|
+`CUISINE DESCRIPTION` == "Eastern European"|
+`CUISINE DESCRIPTION` == "English"|
+`CUISINE DESCRIPTION` == "French"|
+`CUISINE DESCRIPTION` == "German"|
+`CUISINE DESCRIPTION` == "Greek"|
+`CUISINE DESCRIPTION` == "Irish"|
+`CUISINE DESCRIPTION` == "Italian"|
+`CUISINE DESCRIPTION` == "Korean"|
+`CUISINE DESCRIPTION` == "Pizza"|
+`CUISINE DESCRIPTION` == "Pizza/Italian"|
+`CUISINE DESCRIPTION` == "Polish"|
+`CUISINE DESCRIPTION` == "Portuguese"|
+`CUISINE DESCRIPTION` == "Russian")
+European$`CUISINE DESCRIPTION` <- "European"
+European <- European %>% select(`CUISINE DESCRIPTION`, ViolationCode, Week)%>% rename(CuisineType = `CUISINE DESCRIPTION`)
+
+Healthy <- filter(nyc_violations, `CUISINE DESCRIPTION` == "Fruits/Vegetables"|
+`CUISINE DESCRIPTION` == "Juice, Smoothies, Fruit Salads"|
+`CUISINE DESCRIPTION` == "Salads"|
+`CUISINE DESCRIPTION` == "Sandwiches"|
+`CUISINE DESCRIPTION` == "Sandwiches/Salads/Mixed Buffet"|
+`CUISINE DESCRIPTION` == "Soups"|
+`CUISINE DESCRIPTION` == "Soups & Sandwiches"|
+`CUISINE DESCRIPTION` == "Vegetarian")
+Healthy$`CUISINE DESCRIPTION` <- "Healthy"
+Healthy <- Healthy %>% select(`CUISINE DESCRIPTION`, ViolationCode, Week)%>% rename(CuisineType = `CUISINE DESCRIPTION`)
+
+#8 variables
+
+```
+
+```{r IMPORT NYC Complaints data, include=FALSE}
+## Data Import ## 
+
+nyc_complaints <- as_tibble(read_excel("new_nyc_complaints_data.xlsx"))
+
+nyc_complaints <- nyc_complaints %>% 
+  select("Created Date", "Complaint Type", "Descriptor", "Incident Zip", "Borough", "Community Board")
+
+```
+
+```{r create Community District variable in NYC Complaints, include=FALSE}
+## Change Community Board to three digit numbers
+# Community Districts == 
+# Manhattan = 1
+# Bronx = 2
+# Brooklyn = 3
+# Queens = 4
+# Staten Island = 5
+
+nyc_complaints$`Community District`[grepl("MANHATTAN", nyc_complaints$`Community Board`, fixed = TRUE)] <-       paste("1", substring(nyc_complaints$`Community Board`[grepl("MANHATTAN", nyc_complaints$`Community Board`, fixed = TRUE)], 1, 2), sep = "")
+
+nyc_complaints$`Community District`[grepl("BRONX", nyc_complaints$`Community Board`, fixed = TRUE)] <-       paste("2", substring(nyc_complaints$`Community Board`[grepl("BRONX", nyc_complaints$`Community Board`, fixed = TRUE)], 1, 2), sep = "")
+
+nyc_complaints$`Community District`[grepl("BROOKLYN", nyc_complaints$`Community Board`, fixed = TRUE)] <-       paste("3", substring(nyc_complaints$`Community Board`[grepl("BROOKLYN", nyc_complaints$`Community Board`, fixed = TRUE)], 1, 2), sep = "")
+
+nyc_complaints$`Community District`[grepl("QUEENS", nyc_complaints$`Community Board`, fixed = TRUE)] <-       paste("4", substring(nyc_complaints$`Community Board`[grepl("QUEENS", nyc_complaints$`Community Board`, fixed = TRUE)], 1, 2), sep = "")
+
+nyc_complaints$`Community District`[grepl("STATEN ISLAND", nyc_complaints$`Community Board`, fixed = TRUE)] <-       paste("5", substring(nyc_complaints$`Community Board`[grepl("STATEN ISLAND", nyc_complaints$`Community Board`, fixed = TRUE)], 1, 2), sep = "")
+
+nyc_complaints$`Community District`[grepl("Unspecified", nyc_complaints$`Community Board`, fixed = TRUE)] <- NA
+
+nyc_complaints$`Community District` <- as.integer(nyc_complaints$`Community District`)
+
+## Formatting date
+nyc_complaints$DailyDates <-  str_sub(nyc_complaints$`Created Date`, end = -9)
+nyc_complaints$DailyDates <- ymd(nyc_complaints$DailyDates)
+
+## Filter and adding week
+nyc_complaints <- nyc_complaints %>% 
+  mutate(week = floor_date(DailyDates, "weeks"))
+
+```
+
+```{r NYC Complaint variables, include=FALSE}
+## Remove unnecessary rows from descriptor ##
+nyc_complaints <- filter(nyc_complaints, !(Descriptor %in% 
+  c("Food Preparation Location",
+  "Food Temperature", 
+  "Grease In Sewer/Catch Basin (IDG)",
+  "Natural Gas In Sewer/Catch Basin (IFB)",
+  "Oil Spill Into Basin/Sewer - Large (IABL)", 
+  "Oil Spill Into Basin/Sewer - Small (IABS)",
+  "Hours of Operation",
+  "Sidewalk Grating - Defective",
+  "Sidewalk Grating - Missing")))
+
+#Variable 1: Rodents
+
+Rodents<- filter(nyc_complaints, Descriptor == "Rodents/Insects/Garbage" | 
+                              Descriptor == "Rodent Sighting" | 
+                              Descriptor =="Rodents/Mice" |
+                              Descriptor == "Condition Attracting Rodents" |
+                              Descriptor == "Mouse Sighting" |
+                              Descriptor == "Rat Sighting" |
+                              Descriptor == "Rodent Bite - PCS Only" |
+                              Descriptor == "Signs of Rodents")
+
+Rodents$Complaint <- "Rodents"
+
+
+#Variable 2: Litter Baskets/Garbage
+
+Garbage <- filter(nyc_complaints, (`Complaint Type` == "Overflowing Litter Baskets" |
+                                   `Complaint Type` == "Overflowing Recycling Baskets"))
+
+Garbage_Descriptor <- filter(nyc_complaints, Descriptor == "10A Adopt-A-Basket"| 
+                               Descriptor == "E11 Litter Surveillance" | 
+                               Descriptor =="E1A Litter Basket / Improper Use" | 
+                               Descriptor == "E13 Throw-Out" |
+                               Descriptor == "E12 Illegal Dumping Surveillance" |
+                               Descriptor == "Garbage or Litter"| 
+                               Descriptor == "GARBAGE/RECYCLING STORAGE")
+
+Garbage <- rbind(Garbage,Garbage_Descriptor)
+
+Garbage$Complaint <- "Garbage"
+
+
+#Variable 3: Dirty_Unsanitary
+
+Unsanitary <- filter(nyc_complaints, Descriptor ==	"	Dirty/Graffiti	"	|	Descriptor =="Dirty/Graffiti"|
+  Descriptor ==	"	E1 Improper Disposal	"	|	Descriptor =="E1 Improper Disposal"|
+  Descriptor ==	"	E15 Illegal Postering	"	|	Descriptor =="E15 Illegal Postering"|
+  Descriptor ==	"	E2 Receptacle Violation	"	|	Descriptor =="E2 Receptacle Violation"|
+  Descriptor ==	"	E3 Dirty Sidewalk	"	|	Descriptor =="E3 Dirty Sidewalk"|
+  Descriptor ==	"	E3A Dirty Area/Alleyway	"	|	Descriptor =="E3A Dirty Area/Alleyway"|
+  Descriptor ==	"	E5 Loose Rubbish	"	|	Descriptor =="E5 Loose Rubbish"|
+  Descriptor ==	"	Odor	"	|	Descriptor =="Odor"|
+  Descriptor ==	"	Grass/Weeds	"	|	Descriptor =="Grass/Weeds"|
+  Descriptor ==	"	Insects / Pests	"	|	Descriptor =="Insects / Pests"|
+  Descriptor ==	"	MOLD	"	|	Descriptor =="MOLD"|
+  Descriptor ==	"	Odor	"	|	Descriptor =="Odor"|
+  Descriptor ==	"	PESTS	"	|	Descriptor =="PESTS"|
+  Descriptor ==	"	Unclean Condition	"	|	Descriptor =="Unclean Condition"|
+  Descriptor ==	"	Unsanitary Condition	"	|	Descriptor =="Unsanitary Condition")
+
+Unsanitary$Complaint <- "Unsanitary"
+
+
+#Variable 4: Sewage
+
+Sewage <-filter(nyc_complaints, 
+  Descriptor ==	"	Sewage	"	|	Descriptor =="Sewage"|
+  Descriptor ==	"	Grease In Sewer/Catch Basin (IDG)	"	|	Descriptor =="Grease In Sewer/Catch Basin (IDG)"|
+  Descriptor ==	"	Odor In Sewer/Catch Basin (ICB)	"	|	Descriptor =="Odor In Sewer/Catch Basin (ICB)"|
+  Descriptor ==	"	Catch Basin Clogged/Flooding (Use Comments) (SC)	"	|	
+  Descriptor =="Catch Basin Clogged/Flooding (Use Comments) (SC)"|
+  Descriptor ==	"	Catch Basin Connection Broken *Dep Internal Use Only* (SC5)	"	|	
+  Descriptor =="Catch Basin Connection Broken *Dep Internal Use Only* (SC5)"|
+  Descriptor ==	"	Catch Basin Grating Missing (SA4)	"	|	Descriptor =="Catch Basin Grating Missing (SA4)"|
+  Descriptor ==	"	Catch Basin Sunken/Damaged/Raised (SC1)	"	|	
+  Descriptor =="Catch Basin Sunken/Damaged/Raised (SC1)"|
+  Descriptor ==	"	Manhole Overflow (Use Comments) (SA1)	"	|	
+  Descriptor =="Manhole Overflow (Use Comments) (SA1)"|
+  Descriptor ==	"	Plate Missing/Moved-Exposing Hole (SB4)	"	|	
+  Descriptor =="Plate Missing/Moved-Exposing Hole (SB4)"|
+  Descriptor ==	"	Sewer Backup (Use Comments) (SA)	"	|	Descriptor =="Sewer Backup (Use Comments) (SA)"|
+  Descriptor ==	"	Sewer Odor (SA2)	"	|	Descriptor =="Sewer Odor (SA2)"|
+  Descriptor ==	"	Manhole Cover Missing (Emergency) For Dep Internal Use Only (WF)	"	|	
+  Descriptor =="Manhole Cover Missing (Emergency) For Dep Internal Use Only (WF)"|
+  Descriptor ==	"	Sewage	"	|	Descriptor =="Sewage"|
+  Descriptor ==	"	Manhole Cover Missing (Emergency) For Dep Internal Use Only (WF)	"	|	
+  Descriptor =="Manhole Cover Missing (Emergency) For Dep Internal Use Only (WF) ")
+
+Sewage$Complaint <- "Sewage"
+
+```
+
+```{r NYC Complaint Dates, include=FALSE}
+##Weekly Data
+
+## Create columns for each variable. Each row will be the number of times there was a complaint for that variable in that week.  
+
+filter_complaints <- rbind(Garbage, Sewage, Rodents, Unsanitary)
+
+## Week grouping like in excel
+week_count <- filter_complaints %>% 
+  group_by(week, Complaint) %>% 
+  summarize(n = n()) %>% 
+  pivot_wider(names_from = Complaint, values_from = n)
+
+week_count_merged <- left_join(week_count, weekly_violations, by=c("week" = "Week"))
+
+#View(complaints_count)
+
+## Count of complaints by week and district
+week_district_count <- filter_complaints %>% 
+  group_by(week, `Community District`, Complaint) %>% 
+  summarize(n = n()) %>% 
+  pivot_wider(names_from = Complaint, values_from = n) 
+
+#View(week_count)
+#View(nyc_complaints)
+
+```
+
+```{r Merged dataframe, include=FALSE}
+filter_cuisine <- rbind(American, Asian, Bakery_Cafe, Latin, European, Healthy, fast_food)
+
+## Count of Cuisine Types
+cuisine_count <- filter_cuisine %>% 
+  group_by(Week, CuisineType) %>% 
+  summarize(n = n()) %>% 
+  pivot_wider(names_from = CuisineType, values_from = n)
+
+## Merged df of complaints and cuisine
+merged_df <- left_join(week_count_merged, cuisine_count, by=c("week" = "Week"))
+
+```
+
+## Introduction 
+Every restaurant in New York City (NYC) is randomly inspected at least a year.^[https://www1.nyc.gov/site/doh/business/food-operators/the-inspection-process.page#] With each inspection, the inspector notes violations against each restaurant. In our project, we analyzed weekly Animal-related Violations as our dependent variable. We modeled it against our independent variables, Cuisine Types and 311 complaints, along with seasonality to understand the correlation between them. Our data is from 1/1/2017-12/28/2019. We omitted 2020 data due to the COVID-19 pandemic which led to restaurant closure between the months of March and June. However, we forecasted the number of Animal-related Violations in 2020 as if COVID-19 did not exist. To forecast, we used the 4-period moving average of the dependent variable to mitigate for any anomalies in the weekly data set.
+
+We gathered daily data from the NYC Open Data source – ```data.cityofnewyork.us``` – and transformed it into weekly data. Our first dataset, DOHMH New York City Restaurant Inspection Results, includes our dependent variable, Animal-related Violations, and independent variables, Cuisine Types and location (Community Districts). We filtered the violation codes that has an animal-related description. The table below displays all the animal-relation violation code and their descriptions.  
+
+```{r Violation Description, echo=FALSE}
+violation_description <- nyc_inspection_data %>% 
+  select(ViolationCode, ViolationDesc) %>% 
+  filter((ViolationCode == '08A'|ViolationCode == '04K'|ViolationCode == '04L'|
+          ViolationCode == '04M'|ViolationCode == '04N'|ViolationCode == '04O')) %>% 
+  unique()
+
+knitr::kable(violation_description, col.names = c("Code", "Violation Description"), booktabs = T) %>%
+  column_spec(1, width = "2cm") %>% 
+  column_spec(2, width = "14cm")
+```
+
+The Cuisine Type column originally contained 80+ types of cuisines, but we noticed that many of the cuisines can be grouped. We tided the data to present Cuisine Type variables. The Community District represents a location variable. Community Districts that begin with a ‘1’ signifies that the district is in Manhattan, ‘2’ is the Bronx, ‘3’ is Brooklyn, ‘4’ is Queens, and ‘5’ is Staten Island. Our second dataset – 311 Service Requests from 2010 to Present – was consolidated to display only complaints of interest before importing due to its large size. The independent variables included in this dataset are complaints about Rodents, Litter Baskets/Garbage, Sanitation, and Sewage. After gathering our independent variables, we tested seasonality in the dependent variable. The number of Animal-related Violations turned out to be seasonal; therefore, we modeled seasonality as well.  
+
+Using our tidied data, we explored and analyzed the effect the independent variables had on the count of Animal-related Violations using visualizations and modeling.
+
+
+## Exploration of Data
+We explored the relationship between number of Animal-related Violations in restaurants and our independent variables – Cuisine Type, Location (Community District), Complaints about Rodents, Litter Baskets/Garbage, Sanitation, and Sewage. We also observed the timeline for any significant increases during specific times of the year (i.e. Summer months).  
+
+### Relationship between Community Districts and Violations 
+We first looked at the relationship between Location and Violations. Community Districts represent the different locations throughout NYC. In the density map below, we can see which areas in NYC are more susceptible to Animal-related Violations and concluded majority of the Community Districts have about the same number of violations (130-150 violations total). We presumed the areas with few violations may be wealthier or have less restaurants. We determined Location was not a strong variable to further analyze due to the findings in the density map.  
+
+```{r Read Shapemap, warning=FALSE, include=FALSE}
+## Read shapemap file
+ny_shp <- "nyc_shapefile.shp"
+ny_shapefile <- readOGR(ny_shp)
+
+## Turns shapefile into dataframe
+ny_shape_df <- tidy(ny_shapefile)
+
+## Adds community district numbers into dataframe
+ny_shapefile$id <- row.names(ny_shapefile)
+ny_shape_df <- left_join(ny_shape_df, ny_shapefile@data)
+ny_shape_df$boro_cd <- as.integer(ny_shape_df$boro_cd)
+
+```
+
+```{r Relationship between Community Districts and Violations - Density Map, echo=FALSE, message=FALSE, warning=FALSE}
+## Count Violations
+violation_count <- district_violations%>% 
+  group_by(CommunityDistrict) %>% 
+  summarize(n = n())
+
+## Merge Shapemap with violation_count
+violation_map <- left_join(ny_shape_df, violation_count, by = c("boro_cd" = "CommunityDistrict"))
+
+## Create map to show relationship between Violation and Community District
+r <- ggplot(data = violation_map, aes(x = long, y = lat, group = group, fill = n)) +
+  scale_fill_continuous(high = "#132B43", low = "#56B1F7") +
+  geom_polygon(color = "black", size = 0.1) + 
+  coord_map("mercator") + 
+  theme_void() +
+  labs(title = "Density of Violations Across NY Community Districts") 
+
+r
+
+```
+
+### Relationship between Cuisine Type and Violations 
+Cuisine Types are grouped into eight categories – American, Asian, Bakery/Cafe, European, Fast Food, Healthy, Latin, and Other International. They were grouped based on their Cuisine Description likeliness. The bar graph below displays the number of Violations in each Cuisine Type. According to the graph below, the most present violation codes are 08A, 04N, and 04L. American Cuisine Type has the most violations against it.
+
+```{r Relationship between Cuisine Type and Violations - Bar Chart, echo=FALSE, message=FALSE, warning=FALSE, , warning=FALSE, fig.width=6, fig.height=4}
+CuisineType_variables <- rbind(American, Asian, Bakery_Cafe, European, fast_food, Healthy, Latin, other_international)
+
+CuisineType_variables <-  CuisineType_variables %>% group_by(CuisineType, ViolationCode) %>% summarise(AnimalViolation = n())
+
+cuisine_violation <- ggplot(CuisineType_variables, aes(fill=ViolationCode, y=AnimalViolation, x=CuisineType)) + 
+  geom_bar(position="stack", stat="identity") + 
+  ggtitle("Cuisine Types' Violation Count") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.8))  + 
+  scale_fill_manual(values = c("#90E0EF","#00B4D8", "#0096C7", "#0077B6", "#023E8A", "#03045E"))
+
+cuisine_violation
+```
+
+### Relationship between Complaints and Violations 
+Complaints were grouped into four categories – Rodents, Sewage, Garbage, and Unsanitary. In the figures below, we plotted each Complaint against the number of Animal-related Violations over three years. We noticed the trends in the depedent variable were similar to the trends of the complaint type variables. There are notable spikes in each of the figures. We noted in the Rodent Complaint figure, the spikes appear to be more prominent in the summer months. We explored and analyzed this further using a seasonality model in our analysis.  
+
+```{r Relationship between Complaints and Violations - Line Plots, echo=FALSE, fig.width=6, fig.height=4}
+melted <- week_count %>%
+  melt(id.vars = "week")
+melted <- left_join(melted, weekly_violations, by=c("week" = "Week"))
+
+ggplot(melted, aes(x = week, y = value)) +
+  geom_line(size = .7, color = "black") +
+  facet_grid(rows = vars(variable)) +
+  geom_line(aes(x = week, y = AnimalViolation, lty="Animal Violation"), color = "Red") +
+  theme(legend.position = "bottom", legend.title = element_blank()) 
+
+```
+
+
+## Time Series, Seasonality, and Moving Average
+When analyzing our dependent and independent variables, we noticed that there were consistent spikes in the data. There were spikes in Animal-related Violations and Rodent Complaints in the summer, leading us to believe that the data is highly seasonal. 
+
+Therefore, we created a time series and used the Augmented Dickey Fuller (ADF) Test to test if the time series is stationary. We discovered that it is non- stationary, due to its p-value being above 0.05 and confirmed that seasonality exists.  
+
+```{r Time Series, echo=FALSE, message=FALSE, warning=FALSE}
+##variables will be used in Time Series and Seasonality
+weekly_violations$DATE <- as.Date(weekly_violations$Week,
+                        format = "%Y-%m-%d")
+violation_ts_date <- weekly_violations %>% select(DATE, AnimalViolation) %>% mutate(month=month(DATE), year=year(DATE), week=week(DATE)) %>% group_by(year, month, week) %>% summarise(sumViolation = sum(AnimalViolation))
+
+ts_seasonal <- ts(violation_ts_date, start = 2017, frequency = 52)
+#plot(ts_[,1:4])
+ts_seasonality <- ts_seasonal[,4]
+adf.test(ts_seasonality) #p-value: 0.3744 ##This should output
+
+#if the p-value is greater than 0.05, that is an indication that the time series is not stationary. The p-value of the time series is 0.3744, indicating there is seasonality.
+
+```
+
+Furthermore, below displays a graph of Seasonality values against the sum of the Animal-related Violations over three years. To stabilize the Animal-related Violations, we also graphed the Moving Average.  
+
+```{r Seasonality, echo=FALSE, fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
+#variables for Seasonlity and Violation plot
+pp <- violation_ts_date %>% group_by(week) %>% summarise(Seasonality = mean(sumViolation))
+qq <- violation_ts_date %>% 
+  group_by(week) %>% select(sumViolation)
+
+pp_qq_plot <- ggplot() + 
+  geom_line(data = qq, aes(x = week, y = sumViolation), color = "grey56") +
+  geom_line(data = pp, aes(x = week, y = Seasonality), color = "red", size=1) +
+  xlab('Weeks') +
+  ylab('Animal Violations') +
+  labs(title = 'Seasonality') 
+
+pp_qq_plot
+```
+
+```{r Moving Average, echo=FALSE, fig.width=6, fig.height=4}
+violation_movavg <- weekly_violations %>% 
+  mutate(mov_avg = movavg(AnimalViolation, n = 4, type = "r"))
+
+m <- violation_movavg %>% 
+  ggplot(aes(x = Week, y = AnimalViolation)) +
+  geom_line(color = "grey56") +
+  geom_line(aes(x = Week, y = mov_avg), color = "Red", size=1) +
+  ylab("Animal Violations") +
+  labs(title = "Moving Average")
+
+m
+
+```
+
+
+```{r Adding seasonality and moving average, include=FALSE}
+mv <- violation_movavg %>% select(Week, mov_avg)
+
+merged_df <- left_join(merged_df, mv, by=c("week" = "Week"))
+
+merged_df <- merged_df %>% 
+  mutate(week_num = week(week))
+
+merged_df <- left_join(merged_df, pp, by=c("week_num" = "week"))
+
+col_order <- c("week", "Garbage", "Rodents","Sewage","Unsanitary", "AnimalViolation","American","Asian","BakeryCafe","European", "FastFood", "Healthy", "Latin", "Seasonality", "mov_avg","week_num")
+
+merged_df <- merged_df[, col_order]
+
+```
+
+
+## Heatmap
+Before we modeled, we created a heatmap to depict the correlation between the independent variables in order to make hypothesizes about the model. Animal-related Violations had a strong correlation with Asian (0.94), American (.93), European (0.92) and Latin (.90) Cuisine Types. From that, we hypothesized that Asian, American, European and Latin Cuisine Types will have the highest coefficients in the model.  
+
+```{r Variable Correlation, echo=FALSE, fig.width=7, fig.height=5}
+
+mydata <- merged_df[,c(2:14)]
+
+cormat <- round(cor(mydata),2)
+
+melted_cormat <- melt(cormat)
+
+ggplot(data = melted_cormat, aes(x=Var1, y=Var2, fill = -value)) + geom_tile() + 
+  geom_text(aes(Var2, Var1, label = value), color = "Black", size = 4) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.7))
+```
+
+
+## Fitted Models/Simulations
+
+In total, we ran 10 models. Each of those 10 models were statistically significant, with p-values under 0.05. 
+
+The first model we ran, ```mod1```, modeled the complaint type variables against the dependent variable. This resulted in a low R-Square of .26. 
+
+```{r Simulation 1, echo=FALSE}
+
+mod1 <- lm(AnimalViolation ~ Garbage + Rodents + Sewage + Unsanitary, data = merged_df)
+
+```
+
+In ```mod2```, we modeled the cuisine variables against the dependent variable. ```mod2``` resulted in a much higher R-Square than mod1 at .99. The p-value was extremely low at 2.2e-16. While having a low p-value and a high R-Squared is usually the best-case scenario, we knew there had to be an error in the model. We hoped that adding the Cuisine Type variables to the complaint type variables would result in a better model. 
+
+```{r Simulation 2, echo=FALSE}
+
+mod2 <- lm(AnimalViolation ~ American + Asian + `BakeryCafe` + European + Healthy + Latin + FastFood, data = merged_df)
+           
+```
+In ```mod3```, we modeled all the variables together, apart from seasonality. ```mod3``` resulted in similar R-Squared and p-value as ```mod2```. From this, we assumed that the Cuisine Type variables have greater impact on Animal-related Violations than the complaint type variables. We confirmed by checking the coefficients of each variable. The Cuisine Type variables had the highest coefficients, apart from Fast Food, which garnered a negative coefficient that was not statistically significant.   
+
+In ```mod4```, we tested all the variables in ```mod3``` and added in seasonality, in hopes that seasonality will take some weight off the Cuisine Type variables. However, when we added in seasonality, it had a low coefficient of 0.001, and those results were statistically insignificant. R-Squared and p-value remained unchanged from ```mod2``` and ```mod3```. 
+```{r Simulation 3-4, echo=FALSE}
+
+mod3 <- lm(AnimalViolation ~ Garbage + Rodents + Sewage + Unsanitary + 
+             American + Asian + `BakeryCafe` + European + Healthy + Latin + FastFood, 
+           data = merged_df)
+mod4 <- lm(AnimalViolation ~ Garbage + Rodents + Sewage + Unsanitary + 
+             American + Asian + `BakeryCafe` + European + Healthy + Latin + FastFood + Seasonality, 
+           data = merged_df)
+
+```
+
+The normal distribution bell curve reflects the residuals of ```mod4```. Most of the residuals are close to 0, indicating that the model was over-fitting. 
+
+```{r Mod4 Histogram of Residuals, echo=FALSE, fig.width=5, fig.height=3}
+
+ggplot(data = merged_df, aes(mod4$residuals)) +
+  geom_histogram(binwidth = 1, color = "black", fill = "#0077B6") +
+  theme(panel.background = element_rect(fill = "white"),
+        axis.line.x = element_line(),
+        axis.line.y = element_line()) + ggtitle("Histograph for Mod4 Residuals")
+
+```
+
+In the graph below, you can see that the model is overfitting. After ```mod4```, we decided to test different combinations of variables.
+```{r Mod4 Linear Regression, fig.height=3, fig.width=9, echo=FALSE}
+
+plot(mod4, which=2)
+```
+
+We tested different combinations of variables in models 5-10 in hopes of achieving a more realistic R-Squared. We dropped variables from models and combined them. We tested different combinations of the independent variables. With each model run, it became clearer that the models must be inaccurate due to the multicollinearity of the variables.  
+
+```{r Simulations 5-10, echo=FALSE}
+
+mod5_rmUnsanitary <- lm(AnimalViolation ~ Garbage + Rodents + Sewage +  
+             American + Asian + `BakeryCafe` + European + Healthy + Latin + FastFood + Seasonality, 
+           data = merged_df)
+mod6_rmRodents <- lm(AnimalViolation ~ Garbage + Sewage + Unsanitary + 
+             American + Asian + `BakeryCafe` + European + Healthy + Latin + FastFood + Seasonality, 
+           data = merged_df)
+mod7_rmGarbage <- lm(AnimalViolation ~ Rodents + Sewage + Unsanitary + 
+             American + Asian + `BakeryCafe` + European + Healthy + Latin + FastFood + Seasonality, 
+           data = merged_df)
+mod8_rmUnsanRodents <- lm(AnimalViolation ~ Garbage + Sewage + 
+             American + Asian + `BakeryCafe` + European + Healthy + Latin + FastFood + Seasonality, 
+           data = merged_df)
+
+Rodent_Garbage_Unsanitary <- merged_df$Rodents + merged_df$Garbage + merged_df$Unsanitary
+
+merged_df$Rodent_Garbage_Unsanitary <- Rodent_Garbage_Unsanitary
+
+mod9 <- lm(AnimalViolation ~ Sewage + Rodent_Garbage_Unsanitary +
+             American + Asian + `BakeryCafe` + European + Healthy + Latin + FastFood + Seasonality, 
+           data = merged_df)
+
+Combined_Cuisine <- merged_df$American + merged_df$Asian + merged_df$Latin + merged_df$European
+
+merged_df$Combined_Cuisine <- Combined_Cuisine
+
+mod10 <- lm(AnimalViolation ~ Sewage + Rodent_Garbage_Unsanitary +
+              `BakeryCafe` + Healthy + Latin + FastFood + Seasonality + Combined_Cuisine, 
+           data = merged_df)
+
+#summary(mod1)
+#summary(mod2)
+#summary(mod3)
+#summary(mod4)
+#summary(mod5_rmUnsanitary)
+#summary(mod6_rmRodents)
+#summary(mod7_rmGarbage)
+#summary(mod8_rmUnsanRodents)
+#summary(mod9)
+#summary(mod10)
+
+mod_test <- merged_df %>% 
+  add_predictions(mod1, var = "mod1") %>% 
+  add_predictions(mod2, var = "mod2") %>% 
+  add_predictions(mod3, var = "mod3") %>% 
+  add_predictions(mod4, var = "mod4") %>% 
+  add_predictions(mod5_rmUnsanitary, var = "mod5") %>% 
+  add_predictions(mod6_rmRodents, var = "mod6") %>% 
+  add_predictions(mod7_rmGarbage, var = "mod7") %>%
+  add_predictions(mod8_rmUnsanRodents, var = "mod8") %>%
+  add_predictions(mod9, var = "mod9") %>%
+  add_predictions(mod10, var = "mod10") %>% 
+  mutate(rmse1 = sqrt(mean((AnimalViolation - mod1) ^ 2)),
+         rmse2 = sqrt(mean((AnimalViolation - mod2) ^ 2)),
+         rmse3 = sqrt(mean((AnimalViolation - mod3) ^ 2)),
+         rmse4 = sqrt(mean((AnimalViolation - mod4) ^ 2 )),
+         rmse5 = sqrt(mean((AnimalViolation - mod5) ^ 2 )),
+         rmse6 = sqrt(mean((AnimalViolation - mod6) ^ 2 )),
+         rmse7 = sqrt(mean((AnimalViolation - mod7) ^ 2 )),
+         rmse8 = sqrt(mean((AnimalViolation - mod8) ^ 2 )),
+         rmse9 = sqrt(mean((AnimalViolation - mod9) ^ 2 )),
+         rmse10 = sqrt(mean((AnimalViolation - mod10) ^ 2 )))
+   
+r_square <- tibble(Model = c("Mod 1", "Mod 2", "Mod 3", "Mod 4", "Mod 5", "Mod 6", "Mod 7", "Mod 8", 
+                             "Mod 9", "Mod 10"),
+                   `R Square` = c(summary(mod1)$r.squared, summary(mod2)$r.squared,
+                                  summary(mod3)$r.squared, summary(mod4)$r.squared,
+                                  summary(mod5_rmUnsanitary)$r.squared, 
+                                  summary(mod6_rmRodents)$r.squared,
+                                  summary(mod7_rmGarbage)$r.squared, 
+                                  summary(mod8_rmUnsanRodents)$r.squared,
+                                  summary(mod9)$r.squared, summary(mod10)$r.squared),
+                   `P Value` = c(glance(mod1)$p.value, glance(mod2)$p.value,
+                                 glance(mod3)$p.value, glance(mod4)$p.value, 
+                                 glance(mod5_rmUnsanitary)$p.value, 
+                                 glance(mod6_rmRodents)$p.value, 
+                                 glance(mod7_rmGarbage)$p.value, 
+                                 glance(mod8_rmUnsanRodents)$p.value, 
+                                 glance(mod9)$p.value, glance(mod10)$p.value))
+r_square
+
+```
+
+To validate our models, we checked for multicollinearity by running Variance Inflation Factor (VIF) tests. VIF is used to "quantify the extent of correlation between one predictor and the other predictors in a model." If the VIF is higher than 4 or 5, multicollinearity is considered "moderate to high." If VIF is greater than 10, it is regarded as high.[^2] 
+
+[^2]: https://www.displayr.com/variance-inflation-factors-vifs/
+
+In ```mod1```, each independent variable had VIF values lower than 4 which meant that the model results were not heavily impacted by multicollinearity. This was surprising to us, as the Garbage, Rodents and Unsanitary variables are closely correlated. 
+
+```{r validation mod1}
+vif(mod1)
+
+```
+
+In ```mod2```, the American and Latin variables had VIF values of 4 while the Asian European variables had VIF values of 6 and 5, respectively. ```mod2``` has results that were impacted by the multicollinearity of the Cuisine Type variables.  
+
+```{r validation mod2}
+vif(mod2)
+
+```
+
+From ```mod2```, we recognized that each model ran with those Cuisine Type variables would end up with unreasonably high R-Squares given its multicollinearity between the independent variables. We tested VIF for each model there-after and confirmed that the Asian, American, Latin, and European variables consistently tested for high VIF values. 
+
+```{r validation mod3-10}
+vif(mod3)
+vif(mod4)
+vif(mod5_rmUnsanitary)
+vif(mod6_rmRodents)
+vif(mod7_rmGarbage)
+vif(mod8_rmUnsanRodents)
+vif(mod9)
+vif(mod10)
+```
+
+## Random Forest Model 
+
+Although our regression analysis did not result in positive results, we tried to run a random forest model to see if we could gain any learnings from it. Going into the random forest model, we hypothesized that the Cuisine Types will be the most important given its high volume and strong coefficients. As expected, the Cuisine Type variables were the most important. American, Asian, European and Latin were the most important variables, as demonstrated in their high %IncMSE and IncNodePurity.
+
+```{r Simulation 2--, include=FALSE}
+
+forest_violations <- randomForest(AnimalViolation ~ Garbage + Rodents + Sewage + Unsanitary + 
+                                  American + Asian + `BakeryCafe` + European + Healthy + 
+                                    Latin + FastFood, 
+                                data = merged_df, ntree = 200,
+                                importance = TRUE, do.trace = 10)
+```
+
+```{r randomForest importance, echo=FALSE}
+#importance(forest_violations, type = 1)
+importance(forest_violations)[order(importance(forest_violations)[,1], decreasing = TRUE),]
+```
+
+
+## Forecast Model
+Due to the COVID-19 Pandemic, there was very few data for restaurant inspections, since NYC restaurants closed their doors in March 2020. Based on our earlier models, we noticed that the Animal-related Violations were significant throughout the three years and believed that the violations would've continued if restuarants were opened in 2020. We used a ARIMA model to fit and forecast the Animal-related Violations for the year 2020 and beyond. 
+
+ARIMA models require the data to be stationary. We saw earlier in our analysis, that our data is non-stationary, due to its seasonality. Therefore, we used the moving average component to make up a non-seasonal ARIMA model and mitigate for any anomalies in the data. 
+
+```{r forecasting, echo=FALSE, fig.width=7, fig.height=5}
+forecasting_v <- merged_df %>% mutate(year=year(week), month=month(week)) %>% group_by(year, month, week) %>% select(year, month, week, AnimalViolation, mov_avg)
+
+ts_forecast <- ts(forecasting_v, start = 2017, frequency = 52)
+test_forecast <- window(ts_forecast)
+#plot(ts_forecast[,5])
+
+arima_fit = auto.arima(ts_forecast[,5])
+violation_forecast = forecast(arima_fit, h = 200)
+plot(violation_forecast, xlab="Year", ylab="Violation Count")
+```
+
+Based on the low MAPE in our training set (shown in the summary below), we can determine that our forecast model is accurate. 
+```{r Forecast summary, echo=FALSE}
+accuracy(violation_forecast)
+```
+
+
+## Conclusion
+Our goal in this project was to understand which variables influenced Animal-related Violations the most, to then forecast beyond our timeframe. Our linear model and random forest model results were inconclusive, given the multicollinearity present within the independent variables. Therefore, when we decided to forecast the rest of 2020 and beyond, we did not use those model results. Instead, we used the weekly timeseries forecast model to get a more accurate result. The timeseries forecast was able to forecast Animal-related Violations with high accuracy.  
+
